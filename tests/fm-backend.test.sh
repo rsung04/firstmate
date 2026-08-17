@@ -892,11 +892,11 @@ test_spawn_activates_quality_learning_only_for_repo_owned_harness() {
     "quality-learning spawn did not inject the marker-bounded brief section"
   assert_grep "base_sha: \`$base_sha\`" "$brief" \
     "quality-learning brief section did not carry the exact base sha"
-  assert_grep 'python3 scripts/ci/check-quality-learning.py \' "$brief" \
+  assert_grep "python3 scripts/ci/check-quality-learning.py \\" "$brief" \
     "quality-learning brief section did not include the provider-neutral command template"
-  assert_grep 'Run it before implementation with the intended `--path` and `--risk-flag` values' "$brief" \
+  assert_grep "Run it before implementation with the intended \`--path\` and \`--risk-flag\` values" "$brief" \
     "quality-learning brief section lost the intended path/risk requirement"
-  assert_grep 'Read every returned `owning_doc_refs` entry before implementation' "$brief" \
+  assert_grep "Read every returned \`owning_doc_refs\` entry before implementation" "$brief" \
     "quality-learning brief section lost the owning-doc instruction"
   rm -rf "/tmp/fm-$id"
   pass "fm-spawn.sh activates the quality-learning adapter only when the repo owns the harness files"

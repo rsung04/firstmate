@@ -164,9 +164,11 @@ EOF
 
 write_quality_learning_meta() {  # <case_dir> <base_sha> <digest>
   local case_dir=$1 base_sha=$2 digest=$3
-  printf '%s\n' "quality_learning=active" >> "$case_dir/state/task-x1.meta"
-  printf '%s\n' "quality_learning_base_sha=$base_sha" >> "$case_dir/state/task-x1.meta"
-  printf '%s\n' "quality_learning_registry_digest=$digest" >> "$case_dir/state/task-x1.meta"
+  {
+    printf '%s\n' "quality_learning=active"
+    printf '%s\n' "quality_learning_base_sha=$base_sha"
+    printf '%s\n' "quality_learning_registry_digest=$digest"
+  } >> "$case_dir/state/task-x1.meta"
 }
 
 write_quality_learning_receipt() {  # <case_dir> <candidate_sha> <base_sha> <digest> <source_url>
@@ -597,10 +599,7 @@ test_quality_learning_pr_check_rejects_non_https_preserved_source_url() {
     "quality-learning-non-https-preserved-source: initial receipt validation failed"
 
   preserved_meta="$QL_CASE_DIR/data/task-x1/quality-learning-receipts/$QL_CANDIDATE_SHA.sha256"
-  cat > "$preserved_meta" <<EOF
-$(cat "$preserved_meta")
-source_url=http://example.invalid/receipts/$QL_CANDIDATE_SHA.json
-EOF
+  printf '%s\n' "source_url=http://example.invalid/receipts/$QL_CANDIDATE_SHA.json" >> "$preserved_meta"
   clear_current_quality_learning_intake
   capture_pr_check_quiet "$QL_CASE_DIR" task-x1 https://github.com/example/repo/pull/37
 
