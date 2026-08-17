@@ -108,12 +108,20 @@ PY
   mv "$tmp" "$brief"
 }
 
+file_matches_head() {  # <worktree> <repo-relative-path>
+  local wt=$1 rel=$2
+  git -C "$wt" rev-parse --verify --quiet "HEAD:$rel" >/dev/null 2>&1 || return 1
+  git -C "$wt" diff --quiet HEAD -- "$rel"
+}
+
 activate() {
   local wt=${1:?usage: activate <worktree> <brief-path>} brief=${2:?usage: activate <worktree> <brief-path>}
   local doc checker base_sha context_json registry_digest section
   doc="$wt/$HARNESS_DOC"
   checker="$wt/$HARNESS_CHECKER"
   [ -f "$doc" ] && [ -f "$checker" ] || return 0
+  file_matches_head "$wt" "$HARNESS_DOC" || return 0
+  file_matches_head "$wt" "$HARNESS_CHECKER" || return 0
 
   base_sha=$(git -C "$wt" rev-parse HEAD)
   context_json=$(

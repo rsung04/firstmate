@@ -896,6 +896,73 @@ test_spawn_activates_quality_learning_only_for_repo_owned_harness() {
   pass "fm-spawn.sh activates the quality-learning adapter only when the repo owns the harness files"
 }
 
+test_spawn_ignores_untracked_quality_learning_lookalikes() {
+  local proj wt data id state config fb out brief
+  proj="$TMP_ROOT/untracked-quality-learning-project"
+  id="qualitylearnu8"
+  fm_git_init_commit "$proj"
+  wt="$TMP_ROOT/untracked-quality-learning-wt"
+  git -C "$proj" worktree add --quiet -b "fm/$id" "$wt"
+  mkdir -p "$wt/docs/workflows" "$wt/scripts/ci"
+  cat > "$wt/docs/workflows/quality-learning-harness.md" <<'EOF'
+# Untracked lookalike harness
+EOF
+  cat > "$wt/scripts/ci/check-quality-learning.py" <<'EOF'
+#!/usr/bin/env python3
+raise SystemExit("should not run")
+EOF
+  chmod +x "$wt/scripts/ci/check-quality-learning.py"
+  fb=$(make_spawn_fakebin "$TMP_ROOT/untracked-quality-learning-fake" "$wt")
+  data="$TMP_ROOT/untracked-quality-learning-data"
+  state="$TMP_ROOT/untracked-quality-learning-state"
+  config="$TMP_ROOT/untracked-quality-learning-config"
+  mkdir -p "$data/$id" "$state" "$config"
+  brief="$data/$id/brief.md"
+  printf 'test brief content\n' > "$brief"
+
+  out=$(run_spawn_case "$ROOT" "$fb" "$TMP_ROOT/untracked-quality-learning.log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude 2>&1)
+  expect_code 0 $? "untracked lookalike spawn should stay on the legacy path"$'\n'"$out"
+
+  assert_no_grep 'quality_learning=' "$state/$id.meta" \
+    "untracked lookalikes must not write quality-learning metadata"
+  assert_no_grep '<!-- firstmate:quality-learning:start -->' "$brief" \
+    "untracked lookalikes must not rewrite the brief"
+  [ "$(cat "$brief")" = "test brief content" ] \
+    || fail "untracked lookalikes must leave the brief byte-unchanged"
+  rm -rf "/tmp/fm-$id"
+  pass "fm-spawn.sh ignores untracked quality-learning lookalike files"
+}
+
+test_spawn_ignores_dirty_quality_learning_harness_files() {
+  local proj wt data id state config fb out brief
+  proj="$TMP_ROOT/dirty-quality-learning-project"
+  id="qualitylearnd9"
+  fm_git_init_commit "$proj"
+  seed_quality_learning_repo_fixture "$proj"
+  wt="$TMP_ROOT/dirty-quality-learning-wt"
+  git -C "$proj" worktree add --quiet -b "fm/$id" "$wt"
+  printf '\nlocal dirt\n' >> "$wt/docs/workflows/quality-learning-harness.md"
+  fb=$(make_spawn_fakebin "$TMP_ROOT/dirty-quality-learning-fake" "$wt")
+  data="$TMP_ROOT/dirty-quality-learning-data"
+  state="$TMP_ROOT/dirty-quality-learning-state"
+  config="$TMP_ROOT/dirty-quality-learning-config"
+  mkdir -p "$data/$id" "$state" "$config"
+  brief="$data/$id/brief.md"
+  printf 'test brief content\n' > "$brief"
+
+  out=$(run_spawn_case "$ROOT" "$fb" "$TMP_ROOT/dirty-quality-learning.log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude 2>&1)
+  expect_code 0 $? "dirty tracked harness spawn should stay on the legacy path"$'\n'"$out"
+
+  assert_no_grep 'quality_learning=' "$state/$id.meta" \
+    "dirty tracked harness files must not write quality-learning metadata"
+  assert_no_grep '<!-- firstmate:quality-learning:start -->' "$brief" \
+    "dirty tracked harness files must not rewrite the brief"
+  [ "$(cat "$brief")" = "test brief content" ] \
+    || fail "dirty tracked harness files must leave the brief byte-unchanged"
+  rm -rf "/tmp/fm-$id"
+  pass "fm-spawn.sh ignores dirty quality-learning harness files"
+}
+
 test_spawn_keeps_legacy_brief_and_meta_byte_compatible_without_quality_harness() {
   local proj wt data id state config fb out brief
   proj="$TMP_ROOT/legacy-quality-project"
@@ -1219,6 +1286,8 @@ test_send_conformance_old_vs_new
 test_peek_conformance_old_vs_new
 test_spawn_conformance_old_vs_new
 test_spawn_activates_quality_learning_only_for_repo_owned_harness
+test_spawn_ignores_untracked_quality_learning_lookalikes
+test_spawn_ignores_dirty_quality_learning_harness_files
 test_spawn_keeps_legacy_brief_and_meta_byte_compatible_without_quality_harness
 test_spawn_symlinked_project_prefix_avoids_false_refusal
 test_teardown_conformance_old_vs_new
