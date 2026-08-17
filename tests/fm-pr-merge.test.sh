@@ -642,9 +642,9 @@ EOF
   pass "fm-pr-check requires an https preserved source_url before reusing quality-learning evidence"
 }
 
-test_quality_learning_pr_check_requires_strict_ratchet_verdict() {
+test_quality_learning_pr_check_rejects_malformed_transport_fields() {
   local case_dir candidate_sha base_sha digest source_url rc
-  case_dir=$(make_case quality-learning-strict-ratchet-verdict)
+  case_dir=$(make_case quality-learning-malformed-transport-fields)
   mkdir -p "$case_dir/wt"
   candidate_sha=ababcdcdababcdcdababcdcdababcdcdababcdcd
   base_sha=$(printf 'c%.0s' $(seq 1 40))
@@ -659,45 +659,55 @@ test_quality_learning_pr_check_requires_strict_ratchet_verdict() {
   run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/43 >/dev/null 2>"$case_dir/stderr"
   rc=$?
   set -e
-  expect_code 1 "$rc" "quality-learning-strict-ratchet-verdict: missing ratchet_verdict must fail closed"
-  assert_grep 'quality_learning ratchet_verdict must be exactly pass or not_evaluated' "$case_dir/stderr" \
-    "quality-learning-strict-ratchet-verdict: missing ratchet_verdict was not rejected"
+  expect_code 1 "$rc" "quality-learning-malformed-transport-fields: missing ratchet_verdict must fail closed"
+  assert_grep 'quality_learning ratchet_verdict must be a non-empty string' "$case_dir/stderr" \
+    "quality-learning-malformed-transport-fields: missing ratchet_verdict was not rejected"
 
   write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
-  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["ratchet_verdict"] = "planned"'
+  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["ratchet_verdict"] = ""'
   set +e
   run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/43 >/dev/null 2>"$case_dir/stderr"
   rc=$?
   set -e
-  expect_code 1 "$rc" "quality-learning-strict-ratchet-verdict: unknown ratchet_verdict must fail closed"
-  assert_grep 'quality_learning ratchet_verdict must be exactly pass or not_evaluated' "$case_dir/stderr" \
-    "quality-learning-strict-ratchet-verdict: unknown ratchet_verdict was not rejected"
+  expect_code 1 "$rc" "quality-learning-malformed-transport-fields: empty ratchet_verdict must fail closed"
+  assert_grep 'quality_learning ratchet_verdict must be a non-empty string' "$case_dir/stderr" \
+    "quality-learning-malformed-transport-fields: empty ratchet_verdict was not rejected"
 
   write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
-  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["ratchet_verdict"] = "fail"'
+  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["waivers_applied"] = "waiver-1"'
   set +e
   run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/43 >/dev/null 2>"$case_dir/stderr"
   rc=$?
   set -e
-  expect_code 1 "$rc" "quality-learning-strict-ratchet-verdict: fail ratchet_verdict must fail closed"
-  assert_grep 'quality_learning ratchet_verdict must be exactly pass or not_evaluated' "$case_dir/stderr" \
-    "quality-learning-strict-ratchet-verdict: fail ratchet_verdict was not rejected"
+  expect_code 1 "$rc" "quality-learning-malformed-transport-fields: non-list waivers_applied must fail closed"
+  assert_grep 'quality_learning waivers_applied must be a list' "$case_dir/stderr" \
+    "quality-learning-malformed-transport-fields: waivers_applied was not rejected"
 
   write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
-  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["status"] = "required"'
+  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["expired_waivers"] = "waiver-1"'
   set +e
   run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/43 >/dev/null 2>"$case_dir/stderr"
   rc=$?
   set -e
-  expect_code 1 "$rc" "quality-learning-strict-ratchet-verdict: required status must demand ratchet_verdict=pass"
-  assert_grep 'quality_learning status=required requires ratchet_verdict=pass' "$case_dir/stderr" \
-    "quality-learning-strict-ratchet-verdict: required status accepted a non-pass ratchet verdict"
-  pass "fm-pr-check enforces the strict quality-learning ratchet verdict contract"
+  expect_code 1 "$rc" "quality-learning-malformed-transport-fields: non-list expired_waivers must fail closed"
+  assert_grep 'quality_learning expired_waivers must be a list' "$case_dir/stderr" \
+    "quality-learning-malformed-transport-fields: expired_waivers was not rejected"
+
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["runtime_ms"] = -1'
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/43 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "quality-learning-malformed-transport-fields: negative runtime_ms must fail closed"
+  assert_grep 'quality_learning runtime_ms must be a nonnegative number' "$case_dir/stderr" \
+    "quality-learning-malformed-transport-fields: negative runtime_ms was not rejected"
+  pass "fm-pr-check rejects malformed quality-learning transport fields"
 }
 
-test_quality_learning_pr_check_rejects_bad_nested_verdicts() {
+test_quality_learning_pr_check_accepts_policy_bearing_states() {
   local case_dir candidate_sha base_sha digest source_url rc
-  case_dir=$(make_case quality-learning-bad-nested-verdicts)
+  case_dir=$(make_case quality-learning-policy-bearing-states)
   mkdir -p "$case_dir/wt"
   candidate_sha=edededededededededededededededededededed
   base_sha=$(printf 'f%.0s' $(seq 1 40))
@@ -707,35 +717,66 @@ test_quality_learning_pr_check_rejects_bad_nested_verdicts() {
   add_gh_mocks "$case_dir" "$candidate_sha"
 
   write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
-  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["status"] = "planned"'
+  mutate_quality_learning_receipt "$case_dir" '
+document["quality_learning"]["status"] = "required"
+document["quality_learning"]["ratchet_verdict"] = "fail"
+document["quality_learning"]["waivers_applied"] = ["waiver-1"]
+document["quality_learning"]["expired_waivers"] = ["expired-1"]
+document["quality_learning"]["runtime_ms"] = 0
+'
   set +e
   run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/41 >/dev/null 2>"$case_dir/stderr"
   rc=$?
   set -e
-  expect_code 1 "$rc" "quality-learning-bad-nested-verdicts: unexpected nested status must fail closed"
-  assert_grep 'quality_learning status must be exactly one of shadow, advisory, required' "$case_dir/stderr" \
-    "quality-learning-bad-nested-verdicts: invalid nested status was not rejected"
+  expect_code 0 "$rc" "quality-learning-policy-bearing-states: policy-bearing values should be transported without firstmate policy decisions"
+  pass "fm-pr-check accepts policy-bearing quality-learning states when identity and transport fields are valid"
+}
 
+test_quality_learning_pr_check_rejects_malformed_meta_registry_digest() {
+  local case_dir candidate_sha base_sha digest source_url rc
+  case_dir=$(make_case quality-learning-malformed-meta-digest)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+  base_sha=$(printf '1%.0s' $(seq 1 40))
+  digest=$(printf 'A%.0s' $(seq 1 64))
+  source_url="https://example.invalid/receipts/$candidate_sha.json"
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
   write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
-  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["ratchet_verdict"] = "fail"'
-  set +e
-  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/41 >/dev/null 2>"$case_dir/stderr"
-  rc=$?
-  set -e
-  expect_code 1 "$rc" "quality-learning-bad-nested-verdicts: ratchet_verdict=fail must fail closed"
-  assert_grep 'quality_learning ratchet_verdict must be exactly pass or not_evaluated' "$case_dir/stderr" \
-    "quality-learning-bad-nested-verdicts: ratchet_verdict=fail was not rejected"
+  add_gh_mocks "$case_dir" "$candidate_sha"
 
-  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
-  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["expired_waivers"] = ["waiver-1"]'
   set +e
-  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/41 >/dev/null 2>"$case_dir/stderr"
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/44 >/dev/null 2>"$case_dir/stderr"
   rc=$?
   set -e
-  expect_code 1 "$rc" "quality-learning-bad-nested-verdicts: non-empty expired_waivers must fail closed"
-  assert_grep 'quality_learning expired_waivers must be empty for handoff' "$case_dir/stderr" \
-    "quality-learning-bad-nested-verdicts: expired waivers were not rejected"
-  pass "fm-pr-check rejects bad nested quality-learning verdict states"
+
+  expect_code 1 "$rc" "quality-learning-malformed-meta-digest: malformed metadata digest must fail closed"
+  assert_grep 'quality_learning_registry_digest metadata to be exact 64-char lowercase hex' "$case_dir/stderr" \
+    "quality-learning-malformed-meta-digest: malformed metadata digest was not rejected"
+  pass "fm-pr-check rejects malformed quality-learning registry digest metadata"
+}
+
+test_quality_learning_pr_check_rejects_malformed_nested_registry_digest() {
+  local case_dir candidate_sha base_sha digest source_url rc
+  case_dir=$(make_case quality-learning-malformed-nested-digest)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=dededededededededededededededededededede
+  base_sha=$(printf '2%.0s' $(seq 1 40))
+  digest=$(printf 'a%.0s' $(seq 1 64))
+  source_url="https://example.invalid/receipts/$candidate_sha.json"
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["registry_digest"] = document["quality_learning"]["registry_digest"].upper()'
+  add_gh_mocks "$case_dir" "$candidate_sha"
+
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/45 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "quality-learning-malformed-nested-digest: malformed nested digest must fail closed"
+  assert_grep 'quality_learning registry_digest must be exact 64-char lowercase hex' "$case_dir/stderr" \
+    "quality-learning-malformed-nested-digest: malformed nested digest was not rejected"
+  pass "fm-pr-check rejects malformed nested quality-learning registry digests"
 }
 
 test_quality_learning_pr_check_requires_https_source_url() {
@@ -805,7 +846,9 @@ test_quality_learning_pr_merge_reuses_preserved_receipt
 test_quality_learning_pr_check_rejects_tampered_preserved_receipt
 test_quality_learning_pr_check_rejects_mismatched_preserved_sidecar
 test_quality_learning_pr_check_rejects_non_https_preserved_source_url
-test_quality_learning_pr_check_requires_strict_ratchet_verdict
-test_quality_learning_pr_check_rejects_bad_nested_verdicts
+test_quality_learning_pr_check_rejects_malformed_transport_fields
+test_quality_learning_pr_check_accepts_policy_bearing_states
+test_quality_learning_pr_check_rejects_malformed_meta_registry_digest
+test_quality_learning_pr_check_rejects_malformed_nested_registry_digest
 test_quality_learning_pr_check_requires_https_source_url
 test_quality_learning_validate_falls_back_to_sha256sum_when_shasum_is_unavailable

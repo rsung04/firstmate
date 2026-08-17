@@ -52,13 +52,19 @@ Require:
 - outer `base_sha` to match `quality_learning_base_sha`
 - outer `status=passed`
 - outer `cleanup_status=verified`
+- meta `quality_learning_registry_digest` to be exact 64-char lowercase hex
 - nested `quality_learning.candidate_sha` to match the fresh PR head
 - nested `quality_learning.registry_base_sha` to match `quality_learning_base_sha`
-- nested `quality_learning.registry_digest` to match `quality_learning_registry_digest`
+- nested `quality_learning.registry_digest` to be exact 64-char lowercase hex and match `quality_learning_registry_digest`
 - nested `quality_learning.fact_source=changed_files_only`
-- nested `quality_learning.status` must not be `not_applicable` or `environment_failure`
+- nested `quality_learning.status` must be exactly one of `shadow`, `advisory`, or `required`
+- nested `quality_learning.ratchet_verdict` to be a non-empty string
+- nested `quality_learning.waivers_applied` and `quality_learning.expired_waivers` to be lists
+- nested `quality_learning.runtime_ms` to be a nonnegative number
 
-Reject absent, stale, mismatched, not-applicable, environment-failed, or candidate-mismatched evidence.
+Firstmate stays transport only.
+It records those values as receipt evidence and does not reject `ratchet_verdict=fail`, non-empty `expired_waivers`, or `status=required` with a non-pass verdict when the transport shape and identity checks are valid.
+Reject absent, stale, malformed, mismatched, or candidate-mismatched evidence.
 
 On first acceptance, preserve the receipt as immutable task-owned evidence:
 

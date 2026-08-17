@@ -168,6 +168,7 @@ candidate_sha = sys.argv[2]
 base_sha = sys.argv[3]
 digest = sys.argv[4]
 exact_sha = re.compile(r"^[0-9a-f]{40}$")
+exact_digest = re.compile(r"^[0-9a-f]{64}$")
 errors = []
 
 try:
@@ -205,7 +206,10 @@ if receipt:
           errors.append("quality_learning candidate_sha does not match the fresh PR head")
         if ql.get("registry_base_sha") != base_sha:
           errors.append("quality_learning registry_base_sha does not match the activated quality base")
-        if ql.get("registry_digest") != digest:
+        registry_digest = ql.get("registry_digest")
+        if not isinstance(registry_digest, str) or not exact_digest.fullmatch(registry_digest):
+          errors.append("quality_learning registry_digest must be exact 64-char lowercase hex")
+        elif registry_digest != digest:
           errors.append("quality_learning registry_digest does not match the activated registry digest")
         if ql.get("fact_source") != "changed_files_only":
           errors.append("quality_learning fact_source must be changed_files_only")
@@ -213,15 +217,21 @@ if receipt:
         if status not in {"shadow", "advisory", "required"}:
           errors.append("quality_learning status must be exactly one of shadow, advisory, required")
         verdict = ql.get("ratchet_verdict")
-        if verdict not in {"pass", "not_evaluated"}:
-          errors.append("quality_learning ratchet_verdict must be exactly pass or not_evaluated")
-        if status == "required" and verdict != "pass":
-          errors.append("quality_learning status=required requires ratchet_verdict=pass")
+        if not isinstance(verdict, str) or not verdict:
+          errors.append("quality_learning ratchet_verdict must be a non-empty string")
+        waivers_applied = ql.get("waivers_applied")
+        if not isinstance(waivers_applied, list):
+          errors.append("quality_learning waivers_applied must be a list")
         expired_waivers = ql.get("expired_waivers")
         if not isinstance(expired_waivers, list):
           errors.append("quality_learning expired_waivers must be a list")
-        elif expired_waivers:
-          errors.append("quality_learning expired_waivers must be empty for handoff")
+        runtime_ms = ql.get("runtime_ms")
+        if (
+            isinstance(runtime_ms, bool)
+            or not isinstance(runtime_ms, (int, float))
+            or runtime_ms < 0
+        ):
+          errors.append("quality_learning runtime_ms must be a nonnegative number")
 
 if errors:
     for error in errors:
@@ -290,6 +300,10 @@ validate() {
   digest=$(meta_value "$meta" quality_learning_registry_digest)
   [ -n "$base_sha" ] || { echo "error: activated quality-learning task is missing quality_learning_base_sha metadata" >&2; return 1; }
   [ -n "$digest" ] || { echo "error: activated quality-learning task is missing quality_learning_registry_digest metadata" >&2; return 1; }
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "error: activated quality-learning task requires quality_learning_registry_digest metadata to be exact 64-char lowercase hex" >&2
+    return 1
+  }
 
   receipt_path=$(receipt_path_for_task "$task_id")
   source_path=$(receipt_source_path_for_task "$task_id")
