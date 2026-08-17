@@ -21,6 +21,7 @@ set -u
 fm_git_identity fmtest fmtest@example.invalid
 
 PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
+PR_CHECK="$ROOT/bin/fm-pr-check.sh"
 TMP_ROOT=$(fm_test_tmproot fm-pr-merge-tests)
 
 # Build a fresh sandbox for one test case: a state dir with a task meta and a
@@ -29,7 +30,7 @@ make_case() {
   local name=$1 case_dir fakebin
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data/task-x1" "$fakebin"
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
@@ -88,9 +89,64 @@ run_pr_merge() {
   local case_dir=$1; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
+}
+
+run_pr_check() {
+  local case_dir=$1; shift
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
+  PATH="$case_dir/fakebin:$PATH" \
+    "$PR_CHECK" "$@"
+}
+
+write_quality_learning_meta() {  # <case_dir> <base_sha> <digest>
+  local case_dir=$1 base_sha=$2 digest=$3
+  printf '%s\n' "quality_learning=active" >> "$case_dir/state/task-x1.meta"
+  printf '%s\n' "quality_learning_base_sha=$base_sha" >> "$case_dir/state/task-x1.meta"
+  printf '%s\n' "quality_learning_registry_digest=$digest" >> "$case_dir/state/task-x1.meta"
+}
+
+write_quality_learning_receipt() {  # <case_dir> <candidate_sha> <base_sha> <digest> <source_url>
+  local case_dir=$1 candidate_sha=$2 base_sha=$3 digest=$4 source_url=$5
+  cat > "$case_dir/data/task-x1/quality-learning-cloud-receipt.json" <<EOF
+{
+  "schema": "flowslate.codex_cloud_ci.v1",
+  "candidate_sha": "$candidate_sha",
+  "base_sha": "$base_sha",
+  "checked_out_sha": "$candidate_sha",
+  "status": "passed",
+  "cleanup_status": "verified",
+  "checks": [],
+  "changed_files": [],
+  "postgres": {
+    "status": "not_started",
+    "cleanup_status": "not_required"
+  },
+  "runtime": {},
+  "quality_learning": {
+    "candidate_sha": "$candidate_sha",
+    "registry_base_sha": "$base_sha",
+    "registry_digest": "$digest",
+    "fact_source": "changed_files_only",
+    "matched_lessons": [],
+    "consult_doc_refs": [],
+    "required_rules_evaluated": [],
+    "advisory_rules_noted": [],
+    "fingerprints": [],
+    "waivers_applied": [],
+    "expired_waivers": [],
+    "ratchet_verdict": "not_evaluated",
+    "status": "shadow",
+    "runtime_ms": 1.25
+  }
+}
+EOF
+  printf '%s\n' "$source_url" > "$case_dir/data/task-x1/quality-learning-cloud-receipt.source-url"
 }
 
 test_records_pr_and_head_before_merging() {
@@ -295,6 +351,122 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_quality_learning_pr_check_refuses_missing_receipt() {
+  local case_dir base_sha digest rc
+  case_dir=$(make_case quality-learning-missing-receipt)
+  mkdir -p "$case_dir/wt"
+  base_sha=$(printf 'b%.0s' $(seq 1 40))
+  digest=$(printf 'd%.0s' $(seq 1 64))
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/31 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "quality-learning-missing-receipt: fm-pr-check should fail closed without receipt evidence"
+  assert_grep 'exact-head Cloud receipt' "$case_dir/stderr" \
+    "quality-learning-missing-receipt: refusal did not explain the missing receipt"
+  assert_absent "$case_dir/state/task-x1.check.sh" \
+    "quality-learning-missing-receipt: missing evidence must not arm a merge poll"
+  pass "fm-pr-check refuses activated quality-learning tasks without receipt evidence"
+}
+
+test_quality_learning_pr_check_preserves_valid_receipt() {
+  local case_dir candidate_sha base_sha digest source_url copy meta_copy rc
+  case_dir=$(make_case quality-learning-preserve)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  base_sha=$(printf 'b%.0s' $(seq 1 40))
+  digest=$(printf 'd%.0s' $(seq 1 64))
+  source_url="https://example.invalid/receipts/$candidate_sha.json"
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  add_gh_mocks "$case_dir" "$candidate_sha"
+
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/32 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "quality-learning-preserve: fm-pr-check should accept a valid exact-head receipt"
+  grep -qxF 'pr=https://github.com/example/repo/pull/32' "$case_dir/state/task-x1.meta" \
+    || fail "quality-learning-preserve: PR URL was not recorded after receipt validation"
+  grep -qxF "pr_head=$candidate_sha" "$case_dir/state/task-x1.meta" \
+    || fail "quality-learning-preserve: PR head was not recorded after receipt validation"
+  copy="$case_dir/data/task-x1/quality-learning-receipts/$candidate_sha.json"
+  meta_copy="$case_dir/data/task-x1/quality-learning-receipts/$candidate_sha.sha256"
+  assert_present "$copy" "quality-learning-preserve: validated receipt copy was not preserved"
+  assert_present "$meta_copy" "quality-learning-preserve: validated receipt hash metadata was not preserved"
+  assert_grep "source_url=$source_url" "$meta_copy" \
+    "quality-learning-preserve: preserved metadata lost the source url"
+  assert_grep 'sha256=' "$meta_copy" \
+    "quality-learning-preserve: preserved metadata lost the sha256"
+  pass "fm-pr-check preserves a validated quality-learning receipt as immutable task-owned evidence"
+}
+
+test_quality_learning_pr_check_reuses_preserved_receipt_only_for_same_head() {
+  local case_dir candidate_sha base_sha digest source_url new_head rc
+  case_dir=$(make_case quality-learning-reuse)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  base_sha=$(printf 'c%.0s' $(seq 1 40))
+  digest=$(printf 'e%.0s' $(seq 1 64))
+  source_url="https://example.invalid/receipts/$candidate_sha.json"
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  add_gh_mocks "$case_dir" "$candidate_sha"
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/33 >/dev/null \
+    || fail "quality-learning-reuse: initial receipt validation failed"
+
+  rm -f "$case_dir/data/task-x1/quality-learning-cloud-receipt.json" \
+    "$case_dir/data/task-x1/quality-learning-cloud-receipt.source-url"
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/33 >/dev/null \
+    || fail "quality-learning-reuse: preserved receipt should be reusable for the same PR head"
+
+  new_head=cccccccccccccccccccccccccccccccccccccccc
+  add_gh_mocks "$case_dir" "$new_head"
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/33 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "quality-learning-reuse: fm-pr-check should fail closed when the fresh PR head drifts"
+  assert_grep 'fresh PR head' "$case_dir/stderr" \
+    "quality-learning-reuse: drift refusal did not explain the preserved-copy mismatch"
+  pass "fm-pr-check reuses preserved quality-learning evidence only when the fresh PR head still matches"
+}
+
+test_quality_learning_pr_merge_reuses_preserved_receipt() {
+  local case_dir candidate_sha base_sha digest source_url
+  case_dir=$(make_case quality-learning-pr-merge)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=dddddddddddddddddddddddddddddddddddddddd
+  base_sha=$(printf 'e%.0s' $(seq 1 40))
+  digest=$(printf 'f%.0s' $(seq 1 64))
+  source_url="https://example.invalid/receipts/$candidate_sha.json"
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  add_gh_mocks "$case_dir" "$candidate_sha"
+  : > "$case_dir/gh-axi.log"
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/34 >/dev/null \
+    || fail "quality-learning-pr-merge: initial receipt validation failed"
+
+  rm -f "$case_dir/data/task-x1/quality-learning-cloud-receipt.json" \
+    "$case_dir/data/task-x1/quality-learning-cloud-receipt.source-url"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/34 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "quality-learning-pr-merge: fm-pr-merge should reuse preserved evidence"
+
+  grep -qxF 'pr merge 34 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "quality-learning-pr-merge: merge did not proceed after preserved evidence reuse"
+  pass "fm-pr-merge remains compatible with already-validated quality-learning evidence"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -305,3 +477,7 @@ test_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
+test_quality_learning_pr_check_refuses_missing_receipt
+test_quality_learning_pr_check_preserves_valid_receipt
+test_quality_learning_pr_check_reuses_preserved_receipt_only_for_same_head
+test_quality_learning_pr_merge_reuses_preserved_receipt

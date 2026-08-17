@@ -25,6 +25,7 @@ if [ -f "$META" ]; then
       fi
     fi
   fi
+  "$SCRIPT_DIR/fm-quality-learning.sh" validate "$ID" "${PR_HEAD:-}" "$META"
   if ! grep -qxF "pr=$URL" "$META"; then
     echo "pr=$URL" >> "$META"
   fi

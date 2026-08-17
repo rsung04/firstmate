@@ -968,6 +968,11 @@ $("$FM_ROOT/bin/fm-project-mode.sh" "$PROJ_NAME")
 EOF
 fi
 
+QUALITY_META=
+if [ "$KIND" != secondmate ]; then
+  QUALITY_META=$("$SCRIPT_DIR/fm-quality-learning.sh" activate "$WT" "$BRIEF")
+fi
+
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 {
@@ -1008,6 +1013,7 @@ META_WINDOW=$T
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
+  [ -z "$QUALITY_META" ] || printf '%s\n' "$QUALITY_META"
 } > "$STATE/$ID.meta"
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 

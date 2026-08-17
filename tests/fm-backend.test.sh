@@ -769,6 +769,53 @@ run_spawn_case() {  # <bin-root> <fakebin> <log> <state> <data> <config> <proj> 
     "$bin/bin/fm-spawn.sh" "$@"
 }
 
+seed_quality_learning_repo_fixture() {  # <repo>
+  local repo=$1
+  mkdir -p "$repo/docs/workflows" "$repo/scripts/ci"
+  cat > "$repo/docs/workflows/quality-learning-harness.md" <<'EOF'
+# Provider-neutral quality-learning harness
+
+This repo owns a quality-learning harness.
+EOF
+  cat > "$repo/scripts/ci/check-quality-learning.py" <<'EOF'
+#!/usr/bin/env python3
+import argparse
+import json
+import subprocess
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--mode", choices=("context-only",), default="context-only")
+parser.add_argument("--base-sha", required=True)
+parser.add_argument("--path", dest="paths", action="append", default=[])
+parser.add_argument("--risk-flag", dest="risk_flags", action="append", default=[])
+args = parser.parse_args()
+
+head = subprocess.check_output(
+    ["git", "rev-parse", "HEAD"],
+    text=True,
+).strip()
+if args.base_sha != head:
+    print("base SHA mismatch", file=sys.stderr)
+    raise SystemExit(2)
+
+print(
+    json.dumps(
+        {
+            "mode": "context-only",
+            "base_sha": args.base_sha,
+            "registry_digest": "d" * 64,
+            "matched_lesson_ids": [],
+            "owning_doc_refs": [],
+        }
+    )
+)
+EOF
+  chmod +x "$repo/scripts/ci/check-quality-learning.py"
+  git -C "$repo" add docs/workflows/quality-learning-harness.md scripts/ci/check-quality-learning.py
+  git -C "$repo" commit -qm "fixture quality harness"
+}
+
 test_spawn_conformance_old_vs_new() {
   local old_bin fb proj wt data id log_old log_new out_old out_new
   local state_old state_new config_old config_new
@@ -807,6 +854,71 @@ test_spawn_conformance_old_vs_new() {
 
   rm -rf "/tmp/fm-$id"
   pass "fm-spawn.sh: tmux command log and printed summary line are byte-identical old vs new for a ship-task claude spawn"
+}
+
+test_spawn_activates_quality_learning_only_for_repo_owned_harness() {
+  local proj wt data id state config fb out base_sha brief
+  proj="$TMP_ROOT/quality-learning-project"
+  id="qualitylearnz6"
+  fm_git_init_commit "$proj"
+  seed_quality_learning_repo_fixture "$proj"
+  wt="$TMP_ROOT/quality-learning-wt"
+  git -C "$proj" worktree add --quiet -b "fm/$id" "$wt"
+  base_sha=$(git -C "$wt" rev-parse HEAD)
+  fb=$(make_spawn_fakebin "$TMP_ROOT/quality-learning-fake" "$wt")
+  data="$TMP_ROOT/quality-learning-data"
+  state="$TMP_ROOT/quality-learning-state"
+  config="$TMP_ROOT/quality-learning-config"
+  mkdir -p "$data/$id" "$state" "$config"
+  brief="$data/$id/brief.md"
+  printf 'test brief content\n' > "$brief"
+
+  out=$(run_spawn_case "$ROOT" "$fb" "$TMP_ROOT/quality-learning.log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude 2>&1)
+  expect_code 0 $? "quality-learning spawn should succeed"$'\n'"$out"
+
+  assert_grep 'quality_learning=active' "$state/$id.meta" \
+    "quality-learning spawn did not record activation"
+  assert_grep "quality_learning_base_sha=$base_sha" "$state/$id.meta" \
+    "quality-learning spawn did not record the exact base sha"
+  assert_grep "quality_learning_registry_digest=$(printf 'd%.0s' $(seq 1 64))" "$state/$id.meta" \
+    "quality-learning spawn did not record the registry digest"
+  assert_grep '<!-- firstmate:quality-learning:start -->' "$brief" \
+    "quality-learning spawn did not inject the marker-bounded brief section"
+  assert_grep "base_sha: \`$base_sha\`" "$brief" \
+    "quality-learning brief section did not carry the exact base sha"
+  assert_grep 'python3 scripts/ci/check-quality-learning.py \' "$brief" \
+    "quality-learning brief section did not include the provider-neutral command template"
+  assert_grep 'Run it before implementation with the intended `--path` and `--risk-flag` values' "$brief" \
+    "quality-learning brief section lost the intended path/risk requirement"
+  assert_grep 'Read every returned `owning_doc_refs` entry before implementation' "$brief" \
+    "quality-learning brief section lost the owning-doc instruction"
+  rm -rf "/tmp/fm-$id"
+  pass "fm-spawn.sh activates the quality-learning adapter only when the repo owns the harness files"
+}
+
+test_spawn_keeps_legacy_brief_and_meta_byte_compatible_without_quality_harness() {
+  local proj wt data id state config fb out brief
+  proj="$TMP_ROOT/legacy-quality-project"
+  wt="$TMP_ROOT/legacy-quality-wt"
+  data="$TMP_ROOT/legacy-quality-data"
+  id="legacyqualityz7"
+  fm_git_worktree "$proj" "$wt" "fm/$id"
+  fb=$(make_spawn_fakebin "$TMP_ROOT/legacy-quality-fake" "$wt")
+  state="$TMP_ROOT/legacy-quality-state"
+  config="$TMP_ROOT/legacy-quality-config"
+  mkdir -p "$data/$id" "$state" "$config"
+  brief="$data/$id/brief.md"
+  printf 'test brief content\n' > "$brief"
+
+  out=$(run_spawn_case "$ROOT" "$fb" "$TMP_ROOT/legacy-quality.log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude 2>&1)
+  expect_code 0 $? "legacy spawn should succeed"$'\n'"$out"
+
+  assert_no_grep 'quality_learning=' "$state/$id.meta" \
+    "legacy spawn must not write quality-learning metadata without the repo-owned harness"
+  assert_no_grep '<!-- firstmate:quality-learning:start -->' "$brief" \
+    "legacy brief must stay untouched when the repo does not own the quality harness"
+  rm -rf "/tmp/fm-$id"
+  pass "fm-spawn.sh leaves legacy projects byte-compatible when the quality harness files are absent"
 }
 
 # --- symlinked project prefix must not false-refuse the isolation guard -----
@@ -1106,6 +1218,8 @@ test_backend_of_selector_matches_explicit_target_meta
 test_send_conformance_old_vs_new
 test_peek_conformance_old_vs_new
 test_spawn_conformance_old_vs_new
+test_spawn_activates_quality_learning_only_for_repo_owned_harness
+test_spawn_keeps_legacy_brief_and_meta_byte_compatible_without_quality_harness
 test_spawn_symlinked_project_prefix_avoids_false_refusal
 test_teardown_conformance_old_vs_new
 test_spawn_refuses_unknown_backend_flag
