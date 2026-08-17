@@ -71,6 +71,16 @@ sha256_file() {  # <path>
   fi
 }
 
+require_https_source_url() {  # <source-url> <label>
+  case "$1" in
+    https://*) ;;
+    *)
+      echo "error: $2 must use https://" >&2
+      return 1
+      ;;
+  esac
+}
+
 replace_brief_section() {  # <brief-path> <section-text>
   local brief=$1 section=$2 tmp
   tmp=$(mktemp)
@@ -202,8 +212,11 @@ if receipt:
         status = ql.get("status")
         if status not in {"shadow", "advisory", "required"}:
           errors.append("quality_learning status must be exactly one of shadow, advisory, required")
-        if ql.get("ratchet_verdict") == "fail":
-          errors.append("quality_learning ratchet_verdict=fail is not acceptable for handoff")
+        verdict = ql.get("ratchet_verdict")
+        if verdict not in {"pass", "not_evaluated"}:
+          errors.append("quality_learning ratchet_verdict must be exactly pass or not_evaluated")
+        if status == "required" and verdict != "pass":
+          errors.append("quality_learning status=required requires ratchet_verdict=pass")
         expired_waivers = ql.get("expired_waivers")
         if not isinstance(expired_waivers, list):
           errors.append("quality_learning expired_waivers must be a list")
@@ -257,7 +270,7 @@ validate() {
   local task_id=${1:?usage: validate <task-id> <pr-head> <meta-path>}
   local pr_head=${2-}
   local meta=${3:?usage: validate <task-id> <pr-head> <meta-path>}
-  local active base_sha digest receipt_path source_path preserved_receipt preserved_meta source_url
+  local active base_sha digest receipt_path source_path preserved_receipt preserved_meta source_url expected_sha actual_sha
 
   active=$(meta_value "$meta" quality_learning)
   [ "$active" = active ] || return 0
@@ -297,19 +310,24 @@ validate() {
       echo "error: preserved receipt metadata for $pr_head is missing source_url" >&2
       return 1
     }
+    require_https_source_url "$source_url" "preserved receipt metadata for $pr_head"
+    expected_sha=$(meta_value "$preserved_meta" sha256)
+    [ -n "$expected_sha" ] || {
+      echo "error: preserved receipt metadata for $pr_head is missing sha256" >&2
+      return 1
+    }
+    actual_sha=$(sha256_file "$preserved_receipt")
+    [ "$actual_sha" = "$expected_sha" ] || {
+      echo "error: preserved receipt metadata for $pr_head carries a sha256 that does not match the preserved receipt" >&2
+      return 1
+    }
     validate_receipt_payload "$preserved_receipt" "$pr_head" "$base_sha" "$digest"
     return 0
   fi
 
   if [ -e "$receipt_path" ] || [ -e "$source_path" ]; then
     source_url=$(require_non_empty_file "$source_path" "quality-learning receipt source_url")
-    case "$source_url" in
-      https://*) ;;
-      *)
-        echo "error: quality-learning receipt source_url must use https://" >&2
-        return 1
-        ;;
-    esac
+    require_https_source_url "$source_url" "quality-learning receipt source_url"
     validate_receipt_payload "$receipt_path" "$pr_head" "$base_sha" "$digest"
     preserve_receipt "$task_id" "$pr_head" "$receipt_path" "$source_url"
     return 0

@@ -187,6 +187,22 @@ path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 PY
 }
 
+mutate_json_file() {  # <path> <python-expression>
+  local path=$1 expr=$2
+  python3 - "$path" "$expr" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expr = sys.argv[2]
+document = json.loads(path.read_text(encoding="utf-8"))
+namespace = {"document": document}
+exec(expr, {}, namespace)
+path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
 test_records_pr_and_head_before_merging() {
   local case_dir rc
   case_dir=$(make_case records-before-merge)
@@ -531,6 +547,154 @@ test_quality_learning_pr_merge_reuses_preserved_receipt() {
   pass "fm-pr-merge remains compatible with already-validated quality-learning evidence"
 }
 
+test_quality_learning_pr_check_rejects_tampered_preserved_receipt() {
+  local case_dir candidate_sha base_sha digest source_url preserved_copy rc
+  case_dir=$(make_case quality-learning-tampered-preserved)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+  base_sha=$(printf '6%.0s' $(seq 1 40))
+  digest=$(printf '7%.0s' $(seq 1 64))
+  source_url="https://example.invalid/receipts/$candidate_sha.json"
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  add_gh_mocks "$case_dir" "$candidate_sha"
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/35 >/dev/null \
+    || fail "quality-learning-tampered-preserved: initial receipt validation failed"
+
+  preserved_copy="$case_dir/data/task-x1/quality-learning-receipts/$candidate_sha.json"
+  mutate_json_file "$preserved_copy" 'document["runtime"]["tampered"] = True'
+  rm -f "$case_dir/data/task-x1/quality-learning-cloud-receipt.json" \
+    "$case_dir/data/task-x1/quality-learning-cloud-receipt.source-url"
+
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/35 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "quality-learning-tampered-preserved: tampered preserved receipt must fail closed"
+  assert_grep 'preserved receipt metadata for '"$candidate_sha"' carries a sha256 that does not match the preserved receipt' "$case_dir/stderr" \
+    "quality-learning-tampered-preserved: tampered preserved receipt was not rejected by sha256"
+  pass "fm-pr-check rejects a tampered preserved quality-learning receipt copy"
+}
+
+test_quality_learning_pr_check_rejects_mismatched_preserved_sidecar() {
+  local case_dir candidate_sha base_sha digest source_url preserved_meta rc
+  case_dir=$(make_case quality-learning-mismatched-preserved-sidecar)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=dededededededededededededededededededede
+  base_sha=$(printf '8%.0s' $(seq 1 40))
+  digest=$(printf '9%.0s' $(seq 1 64))
+  source_url="https://example.invalid/receipts/$candidate_sha.json"
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  add_gh_mocks "$case_dir" "$candidate_sha"
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/36 >/dev/null \
+    || fail "quality-learning-mismatched-preserved-sidecar: initial receipt validation failed"
+
+  preserved_meta="$case_dir/data/task-x1/quality-learning-receipts/$candidate_sha.sha256"
+  cat > "$preserved_meta" <<EOF
+sha256=$(printf '0%.0s' $(seq 1 64))
+source_url=$source_url
+EOF
+  rm -f "$case_dir/data/task-x1/quality-learning-cloud-receipt.json" \
+    "$case_dir/data/task-x1/quality-learning-cloud-receipt.source-url"
+
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/36 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "quality-learning-mismatched-preserved-sidecar: mismatched preserved sha256 must fail closed"
+  assert_grep 'preserved receipt metadata for '"$candidate_sha"' carries a sha256 that does not match the preserved receipt' "$case_dir/stderr" \
+    "quality-learning-mismatched-preserved-sidecar: mismatched preserved sha256 was not rejected"
+  pass "fm-pr-check rejects a preserved quality-learning sidecar whose sha256 no longer matches"
+}
+
+test_quality_learning_pr_check_rejects_non_https_preserved_source_url() {
+  local case_dir candidate_sha base_sha digest preserved_meta rc
+  case_dir=$(make_case quality-learning-non-https-preserved-source)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=efefefefefefefefefefefefefefefefefefefef
+  base_sha=$(printf 'a%.0s' $(seq 1 40))
+  digest=$(printf 'b%.0s' $(seq 1 64))
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "https://example.invalid/receipts/$candidate_sha.json"
+  add_gh_mocks "$case_dir" "$candidate_sha"
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/37 >/dev/null \
+    || fail "quality-learning-non-https-preserved-source: initial receipt validation failed"
+
+  preserved_meta="$case_dir/data/task-x1/quality-learning-receipts/$candidate_sha.sha256"
+  cat > "$preserved_meta" <<EOF
+$(cat "$preserved_meta")
+source_url=http://example.invalid/receipts/$candidate_sha.json
+EOF
+  rm -f "$case_dir/data/task-x1/quality-learning-cloud-receipt.json" \
+    "$case_dir/data/task-x1/quality-learning-cloud-receipt.source-url"
+
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/37 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "quality-learning-non-https-preserved-source: non-https preserved source_url must fail closed"
+  assert_grep 'preserved receipt metadata for '"$candidate_sha"' must use https://' "$case_dir/stderr" \
+    "quality-learning-non-https-preserved-source: non-https preserved source_url was not rejected"
+  pass "fm-pr-check requires an https preserved source_url before reusing quality-learning evidence"
+}
+
+test_quality_learning_pr_check_requires_strict_ratchet_verdict() {
+  local case_dir candidate_sha base_sha digest source_url rc
+  case_dir=$(make_case quality-learning-strict-ratchet-verdict)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=ababcdcdababcdcdababcdcdababcdcdababcdcd
+  base_sha=$(printf 'c%.0s' $(seq 1 40))
+  digest=$(printf 'd%.0s' $(seq 1 64))
+  source_url="https://example.invalid/receipts/$candidate_sha.json"
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  add_gh_mocks "$case_dir" "$candidate_sha"
+
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"].pop("ratchet_verdict")'
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/43 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "quality-learning-strict-ratchet-verdict: missing ratchet_verdict must fail closed"
+  assert_grep 'quality_learning ratchet_verdict must be exactly pass or not_evaluated' "$case_dir/stderr" \
+    "quality-learning-strict-ratchet-verdict: missing ratchet_verdict was not rejected"
+
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["ratchet_verdict"] = "planned"'
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/43 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "quality-learning-strict-ratchet-verdict: unknown ratchet_verdict must fail closed"
+  assert_grep 'quality_learning ratchet_verdict must be exactly pass or not_evaluated' "$case_dir/stderr" \
+    "quality-learning-strict-ratchet-verdict: unknown ratchet_verdict was not rejected"
+
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["ratchet_verdict"] = "fail"'
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/43 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "quality-learning-strict-ratchet-verdict: fail ratchet_verdict must fail closed"
+  assert_grep 'quality_learning ratchet_verdict must be exactly pass or not_evaluated' "$case_dir/stderr" \
+    "quality-learning-strict-ratchet-verdict: fail ratchet_verdict was not rejected"
+
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["status"] = "required"'
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/43 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "quality-learning-strict-ratchet-verdict: required status must demand ratchet_verdict=pass"
+  assert_grep 'quality_learning status=required requires ratchet_verdict=pass' "$case_dir/stderr" \
+    "quality-learning-strict-ratchet-verdict: required status accepted a non-pass ratchet verdict"
+  pass "fm-pr-check enforces the strict quality-learning ratchet verdict contract"
+}
+
 test_quality_learning_pr_check_rejects_bad_nested_verdicts() {
   local case_dir candidate_sha base_sha digest source_url rc
   case_dir=$(make_case quality-learning-bad-nested-verdicts)
@@ -559,7 +723,7 @@ test_quality_learning_pr_check_rejects_bad_nested_verdicts() {
   rc=$?
   set -e
   expect_code 1 "$rc" "quality-learning-bad-nested-verdicts: ratchet_verdict=fail must fail closed"
-  assert_grep 'quality_learning ratchet_verdict=fail is not acceptable for handoff' "$case_dir/stderr" \
+  assert_grep 'quality_learning ratchet_verdict must be exactly pass or not_evaluated' "$case_dir/stderr" \
     "quality-learning-bad-nested-verdicts: ratchet_verdict=fail was not rejected"
 
   write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
@@ -638,6 +802,10 @@ test_quality_learning_pr_check_preserves_valid_receipt
 test_quality_learning_pr_check_prefers_preserved_receipt_over_drifted_mutable_copy
 test_quality_learning_pr_check_reuses_preserved_receipt_only_for_same_head
 test_quality_learning_pr_merge_reuses_preserved_receipt
+test_quality_learning_pr_check_rejects_tampered_preserved_receipt
+test_quality_learning_pr_check_rejects_mismatched_preserved_sidecar
+test_quality_learning_pr_check_rejects_non_https_preserved_source_url
+test_quality_learning_pr_check_requires_strict_ratchet_verdict
 test_quality_learning_pr_check_rejects_bad_nested_verdicts
 test_quality_learning_pr_check_requires_https_source_url
 test_quality_learning_validate_falls_back_to_sha256sum_when_shasum_is_unavailable
