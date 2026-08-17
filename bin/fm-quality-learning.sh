@@ -61,7 +61,14 @@ require_non_empty_file() {  # <path> <label>
 }
 
 sha256_file() {  # <path>
-  shasum -a 256 "$1" | awk '{print $1}'
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    echo "error: neither shasum nor sha256sum is available for SHA-256 hashing" >&2
+    return 1
+  fi
 }
 
 replace_brief_section() {  # <brief-path> <section-text>
@@ -193,10 +200,15 @@ if receipt:
         if ql.get("fact_source") != "changed_files_only":
           errors.append("quality_learning fact_source must be changed_files_only")
         status = ql.get("status")
-        if status in {"not_applicable", "environment_failure"}:
-          errors.append(f"quality_learning status {status} is not acceptable for handoff")
-        elif not isinstance(status, str) or not status:
-          errors.append("quality_learning status must be a non-empty string")
+        if status not in {"shadow", "advisory", "required"}:
+          errors.append("quality_learning status must be exactly one of shadow, advisory, required")
+        if ql.get("ratchet_verdict") == "fail":
+          errors.append("quality_learning ratchet_verdict=fail is not acceptable for handoff")
+        expired_waivers = ql.get("expired_waivers")
+        if not isinstance(expired_waivers, list):
+          errors.append("quality_learning expired_waivers must be a list")
+        elif expired_waivers:
+          errors.append("quality_learning expired_waivers must be empty for handoff")
 
 if errors:
     for error in errors:
@@ -271,12 +283,30 @@ validate() {
   preserved_receipt=$(preserved_receipt_path "$task_id" "$pr_head")
   preserved_meta=$(preserved_meta_path "$task_id" "$pr_head")
 
+  if [ -r "$preserved_receipt" ] || [ -r "$preserved_meta" ]; then
+    [ -r "$preserved_receipt" ] || {
+      echo "error: activated quality-learning task requires a readable preserved exact-head Cloud receipt for the fresh PR head $pr_head" >&2
+      return 1
+    }
+    [ -r "$preserved_meta" ] || {
+      echo "error: activated quality-learning task requires preserved receipt metadata for the fresh PR head $pr_head" >&2
+      return 1
+    }
+    source_url=$(meta_value "$preserved_meta" source_url)
+    [ -n "$source_url" ] || {
+      echo "error: preserved receipt metadata for $pr_head is missing source_url" >&2
+      return 1
+    }
+    validate_receipt_payload "$preserved_receipt" "$pr_head" "$base_sha" "$digest"
+    return 0
+  fi
+
   if [ -e "$receipt_path" ] || [ -e "$source_path" ]; then
     source_url=$(require_non_empty_file "$source_path" "quality-learning receipt source_url")
     case "$source_url" in
-      *://*) ;;
+      https://*) ;;
       *)
-        echo "error: quality-learning receipt source_url must be a URL" >&2
+        echo "error: quality-learning receipt source_url must use https://" >&2
         return 1
         ;;
     esac
@@ -284,21 +314,8 @@ validate() {
     preserve_receipt "$task_id" "$pr_head" "$receipt_path" "$source_url"
     return 0
   fi
-
-  [ -r "$preserved_receipt" ] || {
-    echo "error: activated quality-learning task requires a readable exact-head Cloud receipt and source URL for the fresh PR head $pr_head" >&2
-    return 1
-  }
-  [ -r "$preserved_meta" ] || {
-    echo "error: activated quality-learning task requires preserved receipt metadata for the fresh PR head $pr_head" >&2
-    return 1
-  }
-  source_url=$(meta_value "$preserved_meta" source_url)
-  [ -n "$source_url" ] || {
-    echo "error: preserved receipt metadata for $pr_head is missing source_url" >&2
-    return 1
-  }
-  validate_receipt_payload "$preserved_receipt" "$pr_head" "$base_sha" "$digest"
+  echo "error: activated quality-learning task requires a readable exact-head Cloud receipt and source URL for the fresh PR head $pr_head" >&2
+  return 1
 }
 
 case "${1:-}" in

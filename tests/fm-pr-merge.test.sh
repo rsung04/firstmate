@@ -104,6 +104,28 @@ run_pr_check() {
     "$PR_CHECK" "$@"
 }
 
+make_sha256sum_only_fakebin() {  # <case_dir> -> echoes fakebin dir
+  local case_dir=$1 fakebin="$case_dir/portable-fakebin" marker="$case_dir/sha256sum-used"
+  mkdir -p "$fakebin"
+  for tool in dirname grep tail cut head tr cmp cp mkdir cat awk python3; do
+    ln -sf "$(command -v "$tool")" "$fakebin/$tool"
+  done
+  cat > "$fakebin/sha256sum" <<EOF
+#!/bin/sh
+printf used > "$marker"
+python3 - "\$1" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path}")
+PY
+EOF
+  chmod +x "$fakebin/sha256sum"
+  printf '%s\n' "$fakebin"
+}
+
 write_quality_learning_meta() {  # <case_dir> <base_sha> <digest>
   local case_dir=$1 base_sha=$2 digest=$3
   printf '%s\n' "quality_learning=active" >> "$case_dir/state/task-x1.meta"
@@ -147,6 +169,22 @@ write_quality_learning_receipt() {  # <case_dir> <candidate_sha> <base_sha> <dig
 }
 EOF
   printf '%s\n' "$source_url" > "$case_dir/data/task-x1/quality-learning-cloud-receipt.source-url"
+}
+
+mutate_quality_learning_receipt() {  # <case_dir> <python-expression>
+  local case_dir=$1 expr=$2
+  python3 - "$case_dir/data/task-x1/quality-learning-cloud-receipt.json" "$expr" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expr = sys.argv[2]
+document = json.loads(path.read_text(encoding="utf-8"))
+namespace = {"document": document}
+exec(expr, {}, namespace)
+path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+PY
 }
 
 test_records_pr_and_head_before_merging() {
@@ -408,6 +446,32 @@ test_quality_learning_pr_check_preserves_valid_receipt() {
   pass "fm-pr-check preserves a validated quality-learning receipt as immutable task-owned evidence"
 }
 
+test_quality_learning_pr_check_prefers_preserved_receipt_over_drifted_mutable_copy() {
+  local case_dir candidate_sha base_sha digest source_url rc
+  case_dir=$(make_case quality-learning-prefer-preserved)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=abababababababababababababababababababab
+  base_sha=$(printf 'b%.0s' $(seq 1 40))
+  digest=$(printf 'd%.0s' $(seq 1 64))
+  source_url="https://example.invalid/receipts/$candidate_sha.json"
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  add_gh_mocks "$case_dir" "$candidate_sha"
+
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/321 >/dev/null \
+    || fail "quality-learning-prefer-preserved: initial receipt validation failed"
+
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$(printf 'c%.0s' $(seq 1 40))" "$digest" "$source_url"
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/321 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "quality-learning-prefer-preserved: preserved receipt should win over drifted mutable intake"
+  pass "fm-pr-check prefers preserved quality-learning evidence over a drifted mutable intake copy for the same PR head"
+}
+
 test_quality_learning_pr_check_reuses_preserved_receipt_only_for_same_head() {
   local case_dir candidate_sha base_sha digest source_url new_head rc
   case_dir=$(make_case quality-learning-reuse)
@@ -467,6 +531,98 @@ test_quality_learning_pr_merge_reuses_preserved_receipt() {
   pass "fm-pr-merge remains compatible with already-validated quality-learning evidence"
 }
 
+test_quality_learning_pr_check_rejects_bad_nested_verdicts() {
+  local case_dir candidate_sha base_sha digest source_url rc
+  case_dir=$(make_case quality-learning-bad-nested-verdicts)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=edededededededededededededededededededed
+  base_sha=$(printf 'f%.0s' $(seq 1 40))
+  digest=$(printf 'a%.0s' $(seq 1 64))
+  source_url="https://example.invalid/receipts/$candidate_sha.json"
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  add_gh_mocks "$case_dir" "$candidate_sha"
+
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["status"] = "planned"'
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/41 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "quality-learning-bad-nested-verdicts: unexpected nested status must fail closed"
+  assert_grep 'quality_learning status must be exactly one of shadow, advisory, required' "$case_dir/stderr" \
+    "quality-learning-bad-nested-verdicts: invalid nested status was not rejected"
+
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["ratchet_verdict"] = "fail"'
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/41 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "quality-learning-bad-nested-verdicts: ratchet_verdict=fail must fail closed"
+  assert_grep 'quality_learning ratchet_verdict=fail is not acceptable for handoff' "$case_dir/stderr" \
+    "quality-learning-bad-nested-verdicts: ratchet_verdict=fail was not rejected"
+
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  mutate_quality_learning_receipt "$case_dir" 'document["quality_learning"]["expired_waivers"] = ["waiver-1"]'
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/41 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "quality-learning-bad-nested-verdicts: non-empty expired_waivers must fail closed"
+  assert_grep 'quality_learning expired_waivers must be empty for handoff' "$case_dir/stderr" \
+    "quality-learning-bad-nested-verdicts: expired waivers were not rejected"
+  pass "fm-pr-check rejects bad nested quality-learning verdict states"
+}
+
+test_quality_learning_pr_check_requires_https_source_url() {
+  local case_dir candidate_sha base_sha digest rc
+  case_dir=$(make_case quality-learning-https-source-url)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=fefefefefefefefefefefefefefefefefefefefe
+  base_sha=$(printf '1%.0s' $(seq 1 40))
+  digest=$(printf '2%.0s' $(seq 1 64))
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "http://example.invalid/receipt.json"
+  add_gh_mocks "$case_dir" "$candidate_sha"
+
+  set +e
+  run_pr_check "$case_dir" task-x1 https://github.com/example/repo/pull/42 >/dev/null 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "quality-learning-https-source-url: non-https source_url must fail closed"
+  assert_grep 'quality-learning receipt source_url must use https://' "$case_dir/stderr" \
+    "quality-learning-https-source-url: non-https source_url was not rejected"
+  pass "fm-pr-check requires an https source_url for quality-learning receipt intake"
+}
+
+test_quality_learning_validate_falls_back_to_sha256sum_when_shasum_is_unavailable() {
+  local case_dir candidate_sha base_sha digest source_url fakebin rc
+  case_dir=$(make_case quality-learning-sha256sum-fallback)
+  mkdir -p "$case_dir/wt"
+  candidate_sha=1212121212121212121212121212121212121212
+  base_sha=$(printf '3%.0s' $(seq 1 40))
+  digest=$(printf '4%.0s' $(seq 1 64))
+  source_url="https://example.invalid/receipts/$candidate_sha.json"
+  write_quality_learning_meta "$case_dir" "$base_sha" "$digest"
+  write_quality_learning_receipt "$case_dir" "$candidate_sha" "$base_sha" "$digest" "$source_url"
+  fakebin=$(make_sha256sum_only_fakebin "$case_dir")
+
+  set +e
+  PATH="$fakebin" FM_DATA_OVERRIDE="$case_dir/data" /bin/bash "$ROOT/bin/fm-quality-learning.sh" \
+    validate task-x1 "$candidate_sha" "$case_dir/state/task-x1.meta" \
+    >"$case_dir/stdout" 2>"$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "quality-learning-sha256sum-fallback: helper should preserve via sha256sum fallback"
+  assert_present "$case_dir/sha256sum-used" \
+    "quality-learning-sha256sum-fallback: sha256sum fallback was not exercised"
+  assert_present "$case_dir/data/task-x1/quality-learning-receipts/$candidate_sha.sha256" \
+    "quality-learning-sha256sum-fallback: preserved sha256 metadata was not written"
+  pass "fm-quality-learning.sh falls back to sha256sum when shasum is unavailable"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -479,5 +635,9 @@ test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
 test_quality_learning_pr_check_refuses_missing_receipt
 test_quality_learning_pr_check_preserves_valid_receipt
+test_quality_learning_pr_check_prefers_preserved_receipt_over_drifted_mutable_copy
 test_quality_learning_pr_check_reuses_preserved_receipt_only_for_same_head
 test_quality_learning_pr_merge_reuses_preserved_receipt
+test_quality_learning_pr_check_rejects_bad_nested_verdicts
+test_quality_learning_pr_check_requires_https_source_url
+test_quality_learning_validate_falls_back_to_sha256sum_when_shasum_is_unavailable
