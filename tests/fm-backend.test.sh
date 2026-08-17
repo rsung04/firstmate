@@ -781,8 +781,10 @@ EOF
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--mode", choices=("context-only",), default="context-only")
@@ -798,6 +800,10 @@ head = subprocess.check_output(
 if args.base_sha != head:
     print("base SHA mismatch", file=sys.stderr)
     raise SystemExit(2)
+
+sentinel = os.environ.get("FM_TEST_QUALITY_SENTINEL")
+if sentinel:
+    Path(sentinel).write_text("executed\n", encoding="utf-8")
 
 print(
     json.dumps(
@@ -961,6 +967,151 @@ test_spawn_ignores_dirty_quality_learning_harness_files() {
     || fail "dirty tracked harness files must leave the brief byte-unchanged"
   rm -rf "/tmp/fm-$id"
   pass "fm-spawn.sh ignores dirty quality-learning harness files"
+}
+
+test_spawn_ignores_tracked_quality_learning_doc_symlink_outside_repo() {
+  local proj wt data id state config fb out brief outside sentinel
+  proj="$TMP_ROOT/symlink-doc-quality-learning-project"
+  id="qualitylearnsymlinkdoc"
+  fm_git_init_commit "$proj"
+  seed_quality_learning_repo_fixture "$proj"
+  outside="$TMP_ROOT/symlink-doc-quality-learning-outside"
+  mkdir -p "$outside"
+  printf '# Outside symlink doc\n' > "$outside/quality-learning-harness.md"
+  rm -f "$proj/docs/workflows/quality-learning-harness.md"
+  ln -s "$outside/quality-learning-harness.md" "$proj/docs/workflows/quality-learning-harness.md"
+  git -C "$proj" add docs/workflows/quality-learning-harness.md
+  git -C "$proj" commit -qm "symlinked harness doc fixture"
+  wt="$TMP_ROOT/symlink-doc-quality-learning-wt"
+  git -C "$proj" worktree add --quiet -b "fm/$id" "$wt"
+  fb=$(make_spawn_fakebin "$TMP_ROOT/symlink-doc-quality-learning-fake" "$wt")
+  data="$TMP_ROOT/symlink-doc-quality-learning-data"
+  state="$TMP_ROOT/symlink-doc-quality-learning-state"
+  config="$TMP_ROOT/symlink-doc-quality-learning-config"
+  mkdir -p "$data/$id" "$state" "$config"
+  brief="$data/$id/brief.md"
+  sentinel="$TMP_ROOT/symlink-doc-quality-learning.executed"
+  printf 'test brief content\n' > "$brief"
+
+  out=$(FM_TEST_QUALITY_SENTINEL="$sentinel" \
+    run_spawn_case "$ROOT" "$fb" "$TMP_ROOT/symlink-doc-quality-learning.log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude 2>&1)
+  expect_code 0 $? "tracked doc symlink outside the repo must stay on the legacy path"$'\n'"$out"
+
+  assert_no_grep 'quality_learning=' "$state/$id.meta" \
+    "a tracked doc symlink outside the repo must not write quality-learning metadata"
+  assert_no_grep '<!-- firstmate:quality-learning:start -->' "$brief" \
+    "a tracked doc symlink outside the repo must not rewrite the brief"
+  [ "$(cat "$brief")" = "test brief content" ] \
+    || fail "a tracked doc symlink outside the repo must leave the brief byte-unchanged"
+  [ ! -e "$sentinel" ] \
+    || fail "a tracked doc symlink outside the repo must not execute the checker"
+  rm -rf "/tmp/fm-$id"
+  pass "fm-spawn.sh ignores a tracked quality-learning doc symlink that points outside the repo"
+}
+
+test_spawn_ignores_tracked_quality_learning_checker_symlink_outside_repo() {
+  local proj wt data id state config fb out brief outside sentinel
+  proj="$TMP_ROOT/symlink-checker-quality-learning-project"
+  id="qualitylearnsymlinkchecker"
+  fm_git_init_commit "$proj"
+  seed_quality_learning_repo_fixture "$proj"
+  outside="$TMP_ROOT/symlink-checker-quality-learning-outside"
+  mkdir -p "$outside"
+  cp "$proj/scripts/ci/check-quality-learning.py" "$outside/check-quality-learning.py"
+  chmod +x "$outside/check-quality-learning.py"
+  rm -f "$proj/scripts/ci/check-quality-learning.py"
+  ln -s "$outside/check-quality-learning.py" "$proj/scripts/ci/check-quality-learning.py"
+  git -C "$proj" add scripts/ci/check-quality-learning.py
+  git -C "$proj" commit -qm "symlinked harness checker fixture"
+  wt="$TMP_ROOT/symlink-checker-quality-learning-wt"
+  git -C "$proj" worktree add --quiet -b "fm/$id" "$wt"
+  fb=$(make_spawn_fakebin "$TMP_ROOT/symlink-checker-quality-learning-fake" "$wt")
+  data="$TMP_ROOT/symlink-checker-quality-learning-data"
+  state="$TMP_ROOT/symlink-checker-quality-learning-state"
+  config="$TMP_ROOT/symlink-checker-quality-learning-config"
+  mkdir -p "$data/$id" "$state" "$config"
+  brief="$data/$id/brief.md"
+  sentinel="$TMP_ROOT/symlink-checker-quality-learning.executed"
+  printf 'test brief content\n' > "$brief"
+
+  out=$(FM_TEST_QUALITY_SENTINEL="$sentinel" \
+    run_spawn_case "$ROOT" "$fb" "$TMP_ROOT/symlink-checker-quality-learning.log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude 2>&1)
+  expect_code 0 $? "tracked checker symlink outside the repo must stay on the legacy path"$'\n'"$out"
+
+  assert_no_grep 'quality_learning=' "$state/$id.meta" \
+    "a tracked checker symlink outside the repo must not write quality-learning metadata"
+  assert_no_grep '<!-- firstmate:quality-learning:start -->' "$brief" \
+    "a tracked checker symlink outside the repo must not rewrite the brief"
+  [ "$(cat "$brief")" = "test brief content" ] \
+    || fail "a tracked checker symlink outside the repo must leave the brief byte-unchanged"
+  [ ! -e "$sentinel" ] \
+    || fail "a tracked checker symlink outside the repo must not execute"
+  rm -rf "/tmp/fm-$id"
+  pass "fm-spawn.sh ignores a tracked quality-learning checker symlink that points outside the repo"
+}
+
+test_spawn_ignores_assume_unchanged_quality_learning_checker_bytes() {
+  local proj wt data id state config fb out brief sentinel
+  proj="$TMP_ROOT/assume-unchanged-quality-learning-project"
+  id="qualitylearnassumeunchanged"
+  fm_git_init_commit "$proj"
+  seed_quality_learning_repo_fixture "$proj"
+  wt="$TMP_ROOT/assume-unchanged-quality-learning-wt"
+  git -C "$proj" worktree add --quiet -b "fm/$id" "$wt"
+  cat > "$wt/scripts/ci/check-quality-learning.py" <<'EOF'
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--mode", choices=("context-only",), default="context-only")
+parser.add_argument("--base-sha", required=True)
+parser.parse_args()
+
+sentinel = os.environ.get("FM_TEST_QUALITY_SENTINEL")
+if sentinel:
+    Path(sentinel).write_text("modified\n", encoding="utf-8")
+
+print(
+    json.dumps(
+        {
+            "mode": "context-only",
+            "base_sha": "0" * 40,
+            "registry_digest": "e" * 64,
+            "matched_lesson_ids": [],
+            "owning_doc_refs": [],
+        }
+    )
+)
+EOF
+  chmod +x "$wt/scripts/ci/check-quality-learning.py"
+  git -C "$wt" update-index --assume-unchanged scripts/ci/check-quality-learning.py
+  fb=$(make_spawn_fakebin "$TMP_ROOT/assume-unchanged-quality-learning-fake" "$wt")
+  data="$TMP_ROOT/assume-unchanged-quality-learning-data"
+  state="$TMP_ROOT/assume-unchanged-quality-learning-state"
+  config="$TMP_ROOT/assume-unchanged-quality-learning-config"
+  mkdir -p "$data/$id" "$state" "$config"
+  brief="$data/$id/brief.md"
+  sentinel="$TMP_ROOT/assume-unchanged-quality-learning.executed"
+  printf 'test brief content\n' > "$brief"
+
+  out=$(FM_TEST_QUALITY_SENTINEL="$sentinel" \
+    run_spawn_case "$ROOT" "$fb" "$TMP_ROOT/assume-unchanged-quality-learning.log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude 2>&1)
+  expect_code 0 $? "assume-unchanged checker bytes must stay on the legacy path"$'\n'"$out"
+
+  assert_no_grep 'quality_learning=' "$state/$id.meta" \
+    "assume-unchanged modified checker bytes must not write quality-learning metadata"
+  assert_no_grep '<!-- firstmate:quality-learning:start -->' "$brief" \
+    "assume-unchanged modified checker bytes must not rewrite the brief"
+  [ "$(cat "$brief")" = "test brief content" ] \
+    || fail "assume-unchanged modified checker bytes must leave the brief byte-unchanged"
+  [ ! -e "$sentinel" ] \
+    || fail "assume-unchanged modified checker bytes must not execute"
+  git -C "$wt" update-index --no-assume-unchanged scripts/ci/check-quality-learning.py
+  rm -rf "/tmp/fm-$id"
+  pass "fm-spawn.sh ignores assume-unchanged quality-learning checker bytes that diverge from HEAD"
 }
 
 test_spawn_keeps_legacy_brief_and_meta_byte_compatible_without_quality_harness() {
@@ -1288,6 +1439,9 @@ test_spawn_conformance_old_vs_new
 test_spawn_activates_quality_learning_only_for_repo_owned_harness
 test_spawn_ignores_untracked_quality_learning_lookalikes
 test_spawn_ignores_dirty_quality_learning_harness_files
+test_spawn_ignores_tracked_quality_learning_doc_symlink_outside_repo
+test_spawn_ignores_tracked_quality_learning_checker_symlink_outside_repo
+test_spawn_ignores_assume_unchanged_quality_learning_checker_bytes
 test_spawn_keeps_legacy_brief_and_meta_byte_compatible_without_quality_harness
 test_spawn_symlinked_project_prefix_avoids_false_refusal
 test_teardown_conformance_old_vs_new

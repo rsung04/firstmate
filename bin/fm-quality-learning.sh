@@ -109,9 +109,17 @@ PY
 }
 
 file_matches_head() {  # <worktree> <repo-relative-path>
-  local wt=$1 rel=$2
-  git -C "$wt" rev-parse --verify --quiet "HEAD:$rel" >/dev/null 2>&1 || return 1
-  git -C "$wt" diff --quiet HEAD -- "$rel"
+  local wt=$1 rel=$2 path mode
+  path="$wt/$rel"
+  [ -f "$path" ] || return 1
+  [ ! -L "$path" ] || return 1
+  mode=$(git -C "$wt" ls-tree HEAD -- "$rel" | awk 'NR==1 {print $1}')
+  case "$mode" in
+    100644|100755) ;;
+    *) return 1 ;;
+  esac
+  # Compare the live worktree bytes to the exact HEAD blob; do not trust index flags.
+  git -C "$wt" cat-file blob "HEAD:$rel" | cmp -s "$path" -
 }
 
 activate() {
