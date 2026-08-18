@@ -93,7 +93,24 @@ test_ship_project_memory_wording() {
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
+test_quality_learning_brief_skill_contract() {
+  local skill="$ROOT/.agents/skills/quality-learning-brief/SKILL.md"
+  assert_present "$skill" "quality-learning brief skill is missing"
+  assert_grep "quality-learning-brief" "$ROOT/AGENTS.md" \
+    "AGENTS.md does not load the quality-learning brief skill"
+  assert_grep "scripts/ci/check-quality-learning.py" "$skill" \
+    "quality-learning brief skill lacks the repository-owned command"
+  assert_grep "--mode context-only" "$skill" \
+    "quality-learning brief skill lacks context-only mode"
+  assert_grep "matched lesson IDs" "$skill" \
+    "quality-learning brief skill does not require matched lesson IDs"
+  assert_grep "Do not execute the command yourself" "$skill" \
+    "quality-learning brief skill does not keep Firstmate transport-only"
+  pass "quality-learning brief skill: command, trigger, and transport boundary are present"
+}
+
 test_script_parses
 test_ship_modes_generate_clean_briefs
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
+test_quality_learning_brief_skill_contract
