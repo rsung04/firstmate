@@ -295,6 +295,16 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_agents_merge_authority_follows_active_goal() {
+  assert_no_grep "Never merge a PR without the captain's explicit word." "$ROOT/AGENTS.md" \
+    "AGENTS.md still imposes per-PR captain approval"
+  assert_grep "When the active task or goal authorizes qualifying green merges" "$ROOT/AGENTS.md" \
+    "AGENTS.md does not recognize active task or goal merge authority"
+  assert_grep "without another routine approval" "$ROOT/AGENTS.md" \
+    "AGENTS.md lost standing green-lane merge authority"
+  pass "AGENTS.md follows active goal merge authority without repeated approval"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -305,3 +315,4 @@ test_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
+test_agents_merge_authority_follows_active_goal
